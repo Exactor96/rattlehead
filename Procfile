@@ -1,1 +1,1 @@
-web: ./target/release/rattlehead web
+web: ./target/release/rattlehead
