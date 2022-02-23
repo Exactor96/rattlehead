@@ -1,10 +1,40 @@
-use actix_web::{App, HttpRequest, HttpServer, middleware, web};
+use actix_web::{App, get, HttpRequest, HttpServer, middleware, post, Responder, web};
 use env_logger;
+use serde::Deserialize;
+use teloxide::prelude2::*;
 
-async fn index(req: HttpRequest) -> &'static str {
-    println!("REQ: {:?}", req);
-    "Hello world!"
+#[derive(Deserialize)]
+struct Message {
+    text: String,
+    title: Option<String>,
+    source: Option<String>,
 }
+
+#[get("/ping")]
+async fn ping_handler(_req: HttpRequest) -> impl Responder {
+    "pong"
+}
+
+#[post("/send_message/{chat_id}")]
+async fn send_message_handler(path: web::Path<i64>, message_data: web::Json<Message>) -> impl Responder {
+    let mut message = format!("{}", message_data.text);
+    if message_data.title.is_some() {
+        message = format!("{}\n\n{}", message_data.title.as_ref().unwrap(), message);
+    }
+    if message_data.source.is_some(){
+        message = format!("{}\n\nSource: {}", message, message_data.source.as_ref().unwrap());
+    }
+    let chat_id = path.into_inner();
+
+    let bot = Bot::from_env().auto_send();
+
+    let result = bot.send_message(chat_id, message).await;
+    match result {
+        Ok(_)=> "Sent successfully".to_string(),
+        Err(error) => format!("Error: {:?}", error)
+    }
+}
+
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -22,8 +52,8 @@ async fn main() -> std::io::Result<()> {
         App::new()
             // enable logger
             .wrap(middleware::Logger::default())
-            .service(web::resource("/index.html").to(|| async { "<h1>Hello world!</h1>" }))
-            .service(web::resource("/").to(index))
+            .service(send_message_handler)
+            .service(ping_handler)
     })
     .bind(("0.0.0.0", port))?
     .run()
