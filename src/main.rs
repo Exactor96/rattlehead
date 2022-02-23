@@ -16,7 +16,7 @@ async fn ping_handler(_req: HttpRequest) -> impl Responder {
 }
 
 #[post("/send_message/{chat_id}")]
-async fn send_message_handler(path: web::Path<i64>, message_data: web::Json<Message>) -> impl Responder {
+async fn send_message_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i64>, message_data: web::Json<Message>) -> impl Responder {
     let mut message = format!("{}", message_data.text);
     if message_data.title.is_some() {
         message = format!("{}\n\n{}", message_data.title.as_ref().unwrap(), message);
@@ -26,7 +26,7 @@ async fn send_message_handler(path: web::Path<i64>, message_data: web::Json<Mess
     }
     let chat_id = path.into_inner();
 
-    let bot = Bot::from_env().auto_send();
+    let bot = _bot.get_ref();
 
     let result = bot.send_message(chat_id, message).await;
     match result {
@@ -48,9 +48,12 @@ async fn main() -> std::io::Result<()> {
 
     println!("Starting on port: {}", port);
 
-    HttpServer::new(|| {
+    let bot = Bot::from_env().auto_send();
+
+    HttpServer::new(move || {
         App::new()
             // enable logger
+            .app_data(web::Data::new(bot.clone()))
             .wrap(middleware::Logger::default())
             .service(send_message_handler)
             .service(ping_handler)
