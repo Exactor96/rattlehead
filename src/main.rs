@@ -13,7 +13,7 @@ struct Message {
 }
 
 
-const MAX_FILE_SIZE: usize = 104857600;
+const MAX_FILE_SIZE: usize = 104857600; // 100mb
 
 #[get("/ping")]
 async fn ping_handler(_req: HttpRequest) -> impl Responder {
@@ -41,16 +41,16 @@ async fn send_message_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i6
 }
 
 #[post("/send_attachment/{chat_id}")]
-async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i64>, mut payload: Multipart, req: HttpRequest) -> impl Responder {
+async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i64>, mut payload: Multipart, req: HttpRequest) -> web::Json<Vec<String>> {
     let chat_id = path.into_inner();
     let content_length = req.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap().parse::<usize>().unwrap();
 
     if content_length <= 0 || content_length > MAX_FILE_SIZE{
-        return format!("Content Length must be greater than 0 and less than {}. Current content length: {}", MAX_FILE_SIZE, content_length);
+        return web::Json(vec![format!("Content Length must be greater than 0 and less than {}. Current content length: {}", MAX_FILE_SIZE, content_length)]);
     }
 
     let bot = _bot.as_ref();
-    let mut files_count = 0;
+    let mut file_names: Vec<String> = Vec::new();
 
     while let Some(field) = payload.next().await {
         // A multipart/form-data stream has to contain `content_disposition`
@@ -69,14 +69,15 @@ async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path
             body.extend_from_slice(&_chunk);
         }
 
-        let file= InputFile::memory(body).file_name(filename);
-        match bot.send_document(chat_id, file).await {
-            Ok(_) => files_count += 1,
-            Err(_) => files_count += 0,
+        let file= InputFile::memory(body).file_name(filename.clone());
+        let result = bot.send_document(chat_id, file).await;
+        if Some(result).is_some() {
+            file_names.push(filename);
         }
     }
 
-    format!("{} files was sent", files_count).to_string()
+    // format!("{} files was sent. Files: [{}]", files_count, file_names.join(", ")).to_string()
+    return web::Json(file_names);
 }
 
 
