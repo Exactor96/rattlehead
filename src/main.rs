@@ -1,7 +1,9 @@
-use actix_web::{App, get, HttpRequest, HttpServer, middleware, post, Responder, web};
+use actix_multipart::Multipart;
+use actix_web::{App, get, http::header, HttpRequest, HttpServer, middleware, post, Responder, web};
 use env_logger;
 use serde::Deserialize;
-use teloxide::prelude2::*;
+use teloxide::{prelude2::*, prelude::StreamExt, types::InputFile};
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 struct Message {
@@ -9,6 +11,9 @@ struct Message {
     title: Option<String>,
     source: Option<String>,
 }
+
+
+const MAX_FILE_SIZE: usize = 104857600;
 
 #[get("/ping")]
 async fn ping_handler(_req: HttpRequest) -> impl Responder {
@@ -35,6 +40,45 @@ async fn send_message_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i6
     }
 }
 
+#[post("/send_attachment/{chat_id}")]
+async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i64>, mut payload: Multipart, req: HttpRequest) -> impl Responder {
+    let chat_id = path.into_inner();
+    let content_length = req.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap().parse::<usize>().unwrap();
+
+    if content_length <= 0 || content_length > MAX_FILE_SIZE{
+        return format!("Content Length must be greater than 0 and less than {}. Current content length: {}", MAX_FILE_SIZE, content_length);
+    }
+
+    let bot = _bot.as_ref();
+    let mut files_count = 0;
+
+    while let Some(field) = payload.next().await {
+        // A multipart/form-data stream has to contain `content_disposition`
+        let mut field = field.unwrap();
+        let content_disposition = field.content_disposition();
+
+        let filename = content_disposition
+            .get_filename()
+            .map_or_else(|| Uuid::new_v4().to_string(), sanitize_filename::sanitize);
+
+        let mut body = web::BytesMut::new();
+
+        // Field in turn is stream of *Bytes* object
+        while let Some( chunk) = field.next().await {
+            let _chunk = chunk.unwrap();
+            body.extend_from_slice(&_chunk);
+        }
+
+        let file= InputFile::memory(body).file_name(filename);
+        match bot.send_document(chat_id, file).await {
+            Ok(_) => files_count += 1,
+            Err(_) => files_count += 0,
+        }
+    }
+
+    format!("{} files was sent", files_count).to_string()
+}
+
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -57,6 +101,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .service(send_message_handler)
             .service(ping_handler)
+            .service(send_attachment_handler)
     })
     .bind(("0.0.0.0", port))?
     .run()
