@@ -1,7 +1,10 @@
+use std::str::FromStr;
+
 use actix_multipart::Multipart;
 use actix_web::{App, get, http::header, HttpRequest, HttpServer, middleware, post, Responder, web};
 use env_logger;
 use serde::Deserialize;
+use sqlx::{Pool, Postgres, Row};
 use teloxide::{prelude2::*, prelude::StreamExt, types::InputFile};
 use uuid::Uuid;
 
@@ -21,7 +24,7 @@ async fn ping_handler(_req: HttpRequest) -> impl Responder {
 }
 
 #[post("/send_message/{chat_id}")]
-async fn send_message_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i64>, message_data: web::Json<Message>) -> impl Responder {
+async fn send_message_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<String>, message_data: web::Json<Message>) -> impl Responder {
     let mut message = format!("{}", message_data.text);
     if message_data.title.is_some() {
         message = format!("{}\n\n{}", message_data.title.as_ref().unwrap(), message);
@@ -29,20 +32,38 @@ async fn send_message_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i6
     if message_data.source.is_some(){
         message = format!("{}\n\nSource: {}", message, message_data.source.as_ref().unwrap());
     }
-    let chat_id = path.into_inner();
+    let _rattle_id = path.into_inner();
+    let rattle_id = Uuid::from_str(_rattle_id.as_str()).unwrap();
+
 
     let bot = _bot.get_ref();
 
-    let result = bot.send_message(chat_id, message).await;
-    match result {
-        Ok(_)=> "Sent successfully".to_string(),
-        Err(error) => format!("Error: {:?}", error)
+    let uri = std::env::var("DATABASE_URL").unwrap();
+
+    let pool = sqlx::PgPool::connect(uri.as_str()).await.unwrap();
+
+    let rows = sqlx::query("select chat_id from rattle_telegram where external_id = $1")
+    .bind(rattle_id)
+    .fetch_all(&pool)
+    .await.unwrap();
+
+
+    for row in rows {
+
+        let chat_id = row.get::<i64, _>("chat_id");
+        
+        bot.send_message(chat_id, &message).await.unwrap();
     }
+
+    "Success"
 }
 
 #[post("/send_attachment/{chat_id}")]
-async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<i64>, mut payload: Multipart, req: HttpRequest) -> web::Json<Vec<String>> {
-    let chat_id = path.into_inner();
+async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path<String>, mut payload: Multipart, req: HttpRequest) -> web::Json<Vec<String>> {
+    
+    let _rattle_id = path.into_inner();
+    let rattle_id = Uuid::from_str(_rattle_id.as_str()).unwrap();
+
     let content_length = req.headers().get(header::CONTENT_LENGTH).unwrap().to_str().unwrap().parse::<usize>().unwrap();
 
     if content_length <= 0 || content_length > MAX_FILE_SIZE{
@@ -51,6 +72,10 @@ async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path
 
     let bot = _bot.as_ref();
     let mut file_names: Vec<String> = Vec::new();
+
+    let uri = std::env::var("DATABASE_URL").unwrap();
+
+    let pool = sqlx::PgPool::connect(uri.as_str()).await.unwrap();
 
     while let Some(field) = payload.next().await {
         // A multipart/form-data stream has to contain `content_disposition`
@@ -69,11 +94,25 @@ async fn send_attachment_handler(_bot: web::Data<AutoSend<Bot>>, path: web::Path
             body.extend_from_slice(&_chunk);
         }
 
-        let file= InputFile::memory(body).file_name(filename.clone());
-        let result = bot.send_document(chat_id, file).await;
-        if Some(result).is_some() {
-            file_names.push(filename);
+
+        let rows = sqlx::query("select chat_id from rattle_telegram where external_id = $1")
+        .bind(rattle_id)
+        .fetch_all(&pool)
+        .await.unwrap();
+    
+    
+        for row in rows {
+    
+            let chat_id = row.get::<i64, _>("chat_id");
+            
+            let file= InputFile::memory(body.clone()).file_name(filename.clone());
+            let result = bot.send_document(chat_id, file).await;
+            if Some(result).is_some() {
+                file_names.push(format!("{}", filename.clone()));
+            }
         }
+
+
     }
 
     // format!("{} files was sent. Files: [{}]", files_count, file_names.join(", ")).to_string()
@@ -95,10 +134,15 @@ async fn main() -> std::io::Result<()> {
 
     let bot = Bot::from_env().auto_send();
 
+    // let uri = std::env::var("DATABASE_URL").unwrap();
+
+    // let pool = sqlx::PgPool::connect(uri.as_str()).await.unwrap();
+
     HttpServer::new(move || {
         App::new()
             // enable logger
             .app_data(web::Data::new(bot.clone()))
+            // .app_data(web::Data::new(pool.clone()))
             .wrap(middleware::Logger::default())
             .service(send_message_handler)
             .service(ping_handler)
